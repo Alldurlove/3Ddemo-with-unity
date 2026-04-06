@@ -13,24 +13,6 @@ public class GunShoot : MonoBehaviour
             cam = Camera.main;
     }
 
-    void Start()
-    {
-        ApplyLockedCursor();
-    }
-
-    /// <summary>从其它窗口点回游戏时，继续保持锁定（可按需删掉）。</summary>
-    void OnApplicationFocus(bool hasFocus)
-    {
-        if (hasFocus)
-            ApplyLockedCursor();
-    }
-
-    static void ApplyLockedCursor()
-    {
-        Cursor.lockState = CursorLockMode.Locked;
-        Cursor.visible = false;
-    }
-
     void Update()
     {
         if (Input.GetMouseButtonDown(0))
@@ -42,7 +24,8 @@ public class GunShoot : MonoBehaviour
         if (cam == null)
             return;
 
-        Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+        // 与交互共用屏幕中心准星
+        Ray ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
         if (!TryGetFirstNonPlayerHit(ray, range, out RaycastHit hit))
             return;
 
