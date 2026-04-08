@@ -25,8 +25,12 @@ public class PlayerMove : MonoBehaviour
     private Vector3 rollDirection;
     private float rollTimer;
     private float nextRollTime;
+    private float controlLockTimer;
+    private bool rootMotionTemporarilyDisabled;
+    private bool originalApplyRootMotion;
 
     bool IsRolling => rollTimer > 0f;
+    bool IsControlLocked => controlLockTimer > 0f;
 
     void Start()
     {
@@ -35,6 +39,8 @@ public class PlayerMove : MonoBehaviour
             animator = GetComponent<Animator>();
         if (animator == null)
             animator = GetComponentInChildren<Animator>();
+        if (animator != null)
+            originalApplyRootMotion = animator.applyRootMotion;
         if (cameraTransform == null && Camera.main != null)
             cameraTransform = Camera.main.transform;
     }
@@ -43,9 +49,12 @@ public class PlayerMove : MonoBehaviour
     {
         if (cameraTransform == null && Camera.main != null)
             cameraTransform = Camera.main.transform;
+        if (controlLockTimer > 0f)
+            controlLockTimer -= Time.deltaTime;
+        ApplyMovementLockState();
 
-        float h = Input.GetAxis("Horizontal");
-        float v = Input.GetAxis("Vertical");
+        float h = IsControlLocked ? 0f : Input.GetAxis("Horizontal");
+        float v = IsControlLocked ? 0f : Input.GetAxis("Vertical");
 
         Vector3 move = BuildCameraRelativeMove(h, v);
         if (move.sqrMagnitude > 1f)
@@ -91,6 +100,41 @@ public class PlayerMove : MonoBehaviour
 
         velocity.y += gravity * Time.deltaTime;
         controller.Move(velocity * Time.deltaTime);
+    }
+
+    /// <summary>
+    /// 在这段时间内屏蔽移动/翻滚输入（例如开枪硬直），可叠加刷新更长时长。
+    /// </summary>
+    public void LockControls(float duration)
+    {
+        if (duration <= 0f)
+            return;
+        controlLockTimer = Mathf.Max(controlLockTimer, duration);
+    }
+
+    void ApplyMovementLockState()
+    {
+        if (animator == null)
+            return;
+
+        if (IsControlLocked)
+        {
+            // 锁位移时，强制移动参数归零，避免状态机仍输出走跑动作导致“滑步感”。
+            animator.SetFloat(speedParameter, 0f);
+
+            // 若动画开启了 Root Motion，会把角色往前带；锁位移时临时关闭它。
+            if (animator.applyRootMotion)
+            {
+                originalApplyRootMotion = true;
+                animator.applyRootMotion = false;
+                rootMotionTemporarilyDisabled = true;
+            }
+        }
+        else if (rootMotionTemporarilyDisabled)
+        {
+            animator.applyRootMotion = originalApplyRootMotion;
+            rootMotionTemporarilyDisabled = false;
+        }
     }
 
     void UpdateAnimation(float moveMagnitude, bool sprint)
