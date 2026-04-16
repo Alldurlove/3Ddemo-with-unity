@@ -1,58 +1,112 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
+using System.Collections.Generic;
 
 /// <summary>
-/// 门交互：在「判定区域」内（Trigger）按交互键开关。
-/// 推荐层级：DoorRoot（本脚本 + BoxCollider 勾选 Is Trigger + 可选 Kinematic Rigidbody）→ 子物体 DoorPanel（门板模型，拖到 Door Pivot）。
-/// 若 Trigger 做在子物体上，在子物体上加 <see cref="DoorInteractVolume"/>，父级仍挂本脚本。
+/// 新门逻辑：
+/// - 未击败 Boss：按 E 仅提示，不能开门
+/// - 已击败 Boss：按 E 进入 2D 谜题场景
+/// 使用触发区判定玩家是否在门前。
 /// </summary>
 public class DoorInteract : MonoBehaviour
 {
+    struct EmissionCache
+    {
+        public Material material;
+        public bool hasEmission;
+        public Color baseEmission;
+    }
+
+    [Header("Input")]
     [SerializeField] string playerTag = "Player";
     [SerializeField] KeyCode interactKey = KeyCode.E;
-    [Tooltip("实际旋转的门板；不指定则旋转本物体（此时判定区会随门一起转）")]
-    [SerializeField] Transform doorPivot;
-    [Tooltip("相对关闭状态绕门板本地 Y 打开的角度（一般填正数即可）")]
-    public float openAngle = 90f;
-    [Tooltip("勾选：向外开；取消：向内开（沿本地 Y 反向）")]
-    [SerializeField] bool openOutward = true;
-    [Tooltip("每秒最大转动角度")]
-    public float rotateSpeed = 120f;
+    [SerializeField] Transform playerRoot;
+    [Tooltip("触发区失败时的距离兜底：在门附近也可按 E 交互")]
+    [SerializeField] bool useDistanceFallback = true;
+    [SerializeField] float interactDistance = 2.8f;
 
-    bool isOpen;
-    Quaternion closedRot;
-    Quaternion openRot;
+    [Header("Scene")]
+    [SerializeField] string bossSceneName = "BossScene";
+    [SerializeField] string puzzleSceneName = "Puzzle2D";
+
+    [Header("Messages")]
+    [SerializeField] string firstEnterBossMessage = "异样的门扉被触发，进入Boss空间。";
+    [SerializeField] string lockedMessage = "门被封锁了，先击败Boss。";
+    [SerializeField] string openMessage = "门已开启，进入谜题空间。";
+
+    [Header("Debug")]
+    [SerializeField] bool verboseLog = true;
+    [Header("Ray Highlight")]
+    [SerializeField] bool enableRayHighlight = true;
+    [SerializeField] Camera highlightCamera;
+    [SerializeField] float highlightRayDistance = 8f;
+    [SerializeField] LayerMask highlightRayMask = ~0;
+    [SerializeField] Renderer[] highlightRenderers;
+    [SerializeField] Color highlightEmissionColor = new Color(0.9f, 0.75f, 0.1f, 1f);
+    [SerializeField] GameObject focusPrompt;
+
     int _playersInside;
-
-    Transform Pivot => doorPivot != null ? doorPivot : transform;
+    readonly List<EmissionCache> _emissionCaches = new List<EmissionCache>();
+    bool _isFocusedByRay;
 
     void Awake()
     {
-        if (doorPivot == null)
-            doorPivot = transform;
-
         var myTrigger = GetComponent<Collider>();
         if (myTrigger != null && myTrigger.isTrigger)
             EnsureKinematicRigidbody(gameObject);
-    }
 
-    void Start()
-    {
-        closedRot = Pivot.rotation;
-        float signedYaw = openOutward ? -openAngle : openAngle;
-        openRot = closedRot * Quaternion.Euler(0f, signedYaw, 0f);
+        ResolvePlayerRoot();
+
+        if (highlightCamera == null)
+            highlightCamera = Camera.main;
+        if (highlightRenderers == null || highlightRenderers.Length == 0)
+            highlightRenderers = GetComponentsInChildren<Renderer>();
+        CacheEmission();
+        ApplyFocusVisual(false);
+        SetPromptActive(false);
     }
 
     void Update()
     {
-        if (_playersInside > 0 && Input.GetKeyDown(interactKey))
-            isOpen = !isOpen;
+        if (enableRayHighlight)
+            UpdateRayHighlight();
 
-        Quaternion target = isOpen ? openRot : closedRot;
-        Pivot.rotation = Quaternion.RotateTowards(
-            Pivot.rotation,
-            target,
-            rotateSpeed * Time.deltaTime
-        );
+        if (!Input.GetKeyDown(interactKey))
+            return;
+
+        bool inTrigger = _playersInside > 0;
+        bool inDistance = useDistanceFallback && IsPlayerInDistance();
+        bool canInteract = inTrigger || inDistance;
+        if (!canInteract)
+        {
+            if (verboseLog)
+                Debug.Log($"[DoorInteract] blocked. inTrigger={inTrigger}, inDistance={inDistance}, playersInside={_playersInside}");
+            return;
+        }
+
+        // 第一次交互：优先进入 Boss 场景
+        if (!GameState.bossSceneEntered)
+        {
+            GameState.bossSceneEntered = true;
+            if (verboseLog)
+                Debug.Log(firstEnterBossMessage);
+            if (!string.IsNullOrWhiteSpace(bossSceneName))
+                SceneManager.LoadScene(bossSceneName);
+            return;
+        }
+
+        // 第二次及以后：保持原有逻辑不变（未击败Boss不让进谜题）
+        if (!GameState.bossDefeated)
+        {
+            if (verboseLog)
+                Debug.Log(lockedMessage);
+            return;
+        }
+
+        if (verboseLog)
+            Debug.Log(openMessage);
+        if (!string.IsNullOrWhiteSpace(puzzleSceneName))
+            SceneManager.LoadScene(puzzleSceneName);
     }
 
     void OnTriggerEnter(Collider other)
@@ -73,16 +127,108 @@ public class DoorInteract : MonoBehaviour
         _playersInside = Mathf.Max(0, _playersInside + delta);
     }
 
-    public void ToggleDoor()
-    {
-        isOpen = !isOpen;
-    }
-
     bool IsPlayer(Collider other)
     {
         if (other.CompareTag(playerTag))
             return true;
         return other.GetComponentInParent<PlayerMove>() != null;
+    }
+
+    bool IsPlayerInDistance()
+    {
+        if (playerRoot == null)
+            ResolvePlayerRoot();
+        if (playerRoot == null)
+            return false;
+        return Vector3.Distance(playerRoot.position, transform.position) <= interactDistance;
+    }
+
+    void ResolvePlayerRoot()
+    {
+        if (playerRoot != null)
+            return;
+        GameObject go = GameObject.FindGameObjectWithTag(playerTag);
+        if (go != null)
+        {
+            playerRoot = go.transform;
+            return;
+        }
+
+        PlayerMove pm = FindFirstObjectByType<PlayerMove>();
+        if (pm != null)
+            playerRoot = pm.transform;
+    }
+
+    void UpdateRayHighlight()
+    {
+        if (highlightCamera == null && Camera.main != null)
+            highlightCamera = Camera.main;
+        if (highlightCamera == null)
+            return;
+
+        bool focused = IsFocusedByCrosshair();
+        ApplyFocusVisual(focused);
+        SetPromptActive(focused);
+    }
+
+    bool IsFocusedByCrosshair()
+    {
+        Ray ray = highlightCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+        RaycastHit[] hits = Physics.RaycastAll(ray.origin, ray.direction, highlightRayDistance, highlightRayMask, QueryTriggerInteraction.Collide);
+        if (hits == null || hits.Length == 0)
+            return false;
+        System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        foreach (RaycastHit h in hits)
+        {
+            if (h.collider == null || IsPlayer(h.collider))
+                continue;
+            DoorInteract door = h.collider.GetComponentInParent<DoorInteract>();
+            return door == this;
+        }
+        return false;
+    }
+
+    void CacheEmission()
+    {
+        _emissionCaches.Clear();
+        if (highlightRenderers == null)
+            return;
+        foreach (Renderer r in highlightRenderers)
+        {
+            if (r == null)
+                continue;
+            Material m = r.material;
+            bool hasEmission = m.HasProperty("_EmissionColor");
+            Color baseEmission = hasEmission ? m.GetColor("_EmissionColor") : Color.black;
+            _emissionCaches.Add(new EmissionCache
+            {
+                material = m,
+                hasEmission = hasEmission,
+                baseEmission = baseEmission
+            });
+        }
+    }
+
+    void ApplyFocusVisual(bool focused)
+    {
+        if (_isFocusedByRay == focused)
+            return;
+        _isFocusedByRay = focused;
+
+        foreach (EmissionCache c in _emissionCaches)
+        {
+            if (c.material == null || !c.hasEmission)
+                continue;
+            c.material.EnableKeyword("_EMISSION");
+            c.material.SetColor("_EmissionColor", focused ? highlightEmissionColor : c.baseEmission);
+        }
+    }
+
+    void SetPromptActive(bool active)
+    {
+        if (focusPrompt != null && focusPrompt.activeSelf != active)
+            focusPrompt.SetActive(active);
     }
 
     static void EnsureKinematicRigidbody(GameObject go)

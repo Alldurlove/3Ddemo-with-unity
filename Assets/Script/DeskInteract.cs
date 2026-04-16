@@ -21,6 +21,8 @@ public class DeskInteract : MonoBehaviour
 
     [Header("Input")]
     [SerializeField] KeyCode interactKey = KeyCode.E;
+    [Tooltip("true=必须准星命中才可交互；false=只要在范围内按键即可交互（仍保留高亮判定）")]
+    [SerializeField] bool requireFocusForInteract = false;
 
     [Header("Highlight / Prompt")]
     [SerializeField] Renderer[] highlightRenderers;
@@ -36,6 +38,8 @@ public class DeskInteract : MonoBehaviour
     [Tooltip("按下交互键后直接切换场景（用于进入 2D 解谜）")]
     [SerializeField] bool loadSceneOnInteract;
     [SerializeField] string targetSceneName = "Puzzle2D";
+    [Header("Debug")]
+    [SerializeField] bool verboseLog;
 
     struct EmissionCache
     {
@@ -53,12 +57,7 @@ public class DeskInteract : MonoBehaviour
     {
         if (playerCamera == null)
             playerCamera = Camera.main;
-        if (playerRoot == null)
-        {
-            GameObject go = GameObject.FindGameObjectWithTag("Player");
-            if (go != null)
-                playerRoot = go.transform;
-        }
+        ResolvePlayerRoot();
 
         if (highlightRenderers == null || highlightRenderers.Length == 0)
             highlightRenderers = GetComponentsInChildren<Renderer>();
@@ -82,8 +81,14 @@ public class DeskInteract : MonoBehaviour
         SetPromptActive(focusPrompt, focusedByRay);
         ApplyFocusVisual(focusedByRay);
 
-        if (focusedByRay && inRange && Input.GetKeyDown(interactKey))
-            HandleInteract();
+        if (Input.GetKeyDown(interactKey))
+        {
+            bool canInteract = inRange && (!requireFocusForInteract || focusedByRay);
+            if (canInteract)
+                HandleInteract();
+            else if (verboseLog)
+                Debug.Log($"[DeskInteract] {name} blocked. focused={focusedByRay}, inRange={inRange}, requireFocus={requireFocusForInteract}, playerRoot={(playerRoot != null ? playerRoot.name : "null")}, cam={(playerCamera != null ? playerCamera.name : "null")}");
+        }
     }
 
     void HandleInteract()
@@ -96,11 +101,42 @@ public class DeskInteract : MonoBehaviour
         SceneManager.LoadScene(targetSceneName);
     }
 
+    public void AddInteractListener(UnityAction callback)
+    {
+        if (callback != null)
+            onInteract.AddListener(callback);
+    }
+
+    public void RemoveInteractListener(UnityAction callback)
+    {
+        if (callback != null)
+            onInteract.RemoveListener(callback);
+    }
+
     bool IsPlayerInRange()
     {
         if (playerRoot == null)
+            ResolvePlayerRoot();
+        if (playerRoot == null)
             return false;
         return Vector3.Distance(playerRoot.position, GetInteractWorldPosition()) <= interactRange;
+    }
+
+    void ResolvePlayerRoot()
+    {
+        if (playerRoot != null)
+            return;
+
+        GameObject go = GameObject.FindGameObjectWithTag("Player");
+        if (go != null)
+        {
+            playerRoot = go.transform;
+            return;
+        }
+
+        PlayerMove pm = FindFirstObjectByType<PlayerMove>();
+        if (pm != null)
+            playerRoot = pm.transform;
     }
 
     bool IsFocusedByCrosshair()
